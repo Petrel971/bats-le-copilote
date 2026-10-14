@@ -541,6 +541,7 @@ function reportView(){
 /* ============ duel contre le bot ============ */
 // Cartes privées : distribuées ici, jamais lues par advise(). Le bot ne reçoit que SES deux cartes.
 const PRIV={cards:{},deck:[]};
+const HU_LAYOUT=false; // false : table ovale même en tête-à-tête
 const ME=0;
 let opts=Object.assign({bots:1,stack:8000,sb:50,bb:100,every:15,showAdvice:false,showWhy:true,speed:900},db.duelOpts||{});opts.bots=1;
 let T={pending:new Set(),toAct:-1,lastRaise:0,result:null,notes:[],userAdv:null,raiseTo:0,reveal:new Set()};
@@ -593,7 +594,7 @@ function startHand(){
     dealt:g.players.map(p=>!p.out&&p.stack>0),hero:[null,null],board:Array(5).fill(null),log:[],dec:[],start:g.players.map(p=>p.stack),t:Date.now()};
   g.cur=c;
   const d=shuffle();PRIV.cards={};g.players.forEach((p,i)=>{if(c.dealt[i])PRIV.cards[i]=[d.pop(),d.pop()]});PRIV.deck=d;
-  T={pending:new Set(),toAct:-1,lastRaise:bb,result:null,notes:[],userAdv:null,raiseTo:0,reveal:new Set()};
+  const prevText=T.prevText;T={pending:new Set(),toAct:-1,lastRaise:bb,result:null,notes:[],userAdv:null,raiseTo:0,reveal:new Set(),prevText};
   const o=seatsFrom(c.dealer+1,i=>c.dealt[i]);
   const sbS=o.length===2?c.dealer:o[0],bbS=o.length===2?o.find(i=>i!==c.dealer):o[1];
   c.bets[sbS]=Math.min(sb,g.players[sbS].stack);c.bets[bbS]=Math.min(bb,g.players[bbS].stack);
@@ -668,7 +669,7 @@ function showdown(){
   const levels=[...new Set(al.map(i=>sc[i]))].sort((a,b)=>b-a);const groups=levels.map(s=>al.filter(i=>sc[i]===s));
   const won=distribute(groups);al.forEach(i=>T.reveal.add(i));
   const parts=Object.keys(won).map(i=>`${esc(g.players[i].name)} remporte ${fmt(won[i])} avec ${handName(sc[i]).toLowerCase()}`);
-  T.result={won,text:parts.join(' · ')+'.'};
+  T.result={won,text:parts.join(' · ')+'.',hands:al.map(i=>({i,cards:PRIV.cards[i],name:handName(sc[i]),win:won[i]>0}))};
   const shown={};al.forEach(i=>shown[i]=PRIV.cards[i]);record(shown);
 }
 function record(shown){
@@ -680,7 +681,7 @@ function record(shown){
   T.toAct=-1;const nx=seatsFrom(g.dealer+1,i=>!g.players[i].out)[0];if(nx!=null)g.dealer=nx;
   save();render();
   // Rien à décider : la main suivante démarre toute seule après un court instant.
-  if(!g.ended&&!g.players[ME].out){const tk=token();setTimeout(()=>{if(token()===tk&&T.result)startHand()},Object.keys(shown||{}).length?3800:2200)}
+  if(!g.ended&&!g.players[ME].out){const tk=token();setTimeout(()=>{if(token()===tk&&T.result){T.prevText=T.result.text;startHand()}},Object.keys(shown||{}).length?5000:3000)}
 }
 
 function defiResult(g){
@@ -727,6 +728,17 @@ function huHTML(g,c,P,pot,hand){
   </div>`;
 }
 
+// Ce que vient de faire le bot (ou qu'il réfléchit), en gros.
+function botFeed(g,c){
+  const bots=g.players.map((p,i)=>i).filter(i=>i!==ME&&c.dealt[i]);
+  if(T.toAct>=0&&T.toAct!==ME)return `<div class="botfeed thinking"><span class="dot"></span><b>${esc(g.players[T.toAct].name)}</b> réfléchit…</div>`;
+  const last=[...c.log].reverse().find(x=>x.p!==ME&&x.a!=='blind');
+  if(!last||!bots.includes(last.p))return '';
+  const w={fold:'se couche',check:'checke',call:'suit',raise:(g.players[last.p].stack-c.bets[last.p]===0?'fait tapis':(last.st===0||c.log.some(x=>x.st===last.st&&x.a==='raise'&&x!==last&&c.log.indexOf(x)<c.log.indexOf(last))?'relance à':'mise'))}[last.a];
+  const amt=(last.a==='raise'||last.a==='call')&&last.amt?' '+fmt(last.amt):'';
+  return `<div class="botfeed ${last.a}"><span class="lbl">${STREETS[last.st]}</span><div><b>${esc(g.players[last.p].name)}</b> ${w}<span class="num">${amt}</span></div></div>`;
+}
+
 /* ============ rendu du duel ============ */
 const app=document.getElementById('app'),layer=document.getElementById('layer');
 function closeLayer(){layer.innerHTML=''}
@@ -757,12 +769,13 @@ function gameView(){
   if(T.result){
     const notes=opts.showWhy?T.notes:[];
     const botsSeen=[...new Set(notes.map(nn=>nn.i))];
-    bottom=`<div class="result"><div class="restext">${T.result.text}</div>
+    bottom=`<div class="result"><div class="lbl">Résultat de la main</div><div class="restext big">${T.result.text}</div>
+      ${(T.result.hands||[]).map(x=>`<div class="sdrow ${x.win?'win':''}"><b>${esc(g.players[x.i].name)}</b><span class="sdcards">${x.cards.map(cc=>cardHTML(cc)).join('')}</span><span>${x.name}</span></div>`).join('')}
       ${notes.length?`<details class="why-bot" ${T.notes.length<=6?'open':''}><summary>Le raisonnement du bot</summary>
         ${botsSeen.map(b=>`<div class="lbl" style="margin-top:8px">${esc(g.players[b].name)} avait ${PRIV.cards[b].map(x=>cardHTML(x)).join(' ')}</div>`).join('')}
         <ol class="steps">${notes.map(nn=>`<li><b>${esc(g.players[nn.i].name)} · ${STREETS[nn.st]} : ${nn.label}${nn.act==='raise'&&nn.amount?' à '+fmt(nn.amount):''}</b> <span class="muted num">(${nn.eq!=null?Math.round(nn.eq*100)+' % de chances':'sans calcul'})</span><div class="muted" style="font-size:13px">${nn.lines.slice(0,3).join(' ')}</div></li>`).join('')}</ol></details>`:''}
       ${g.defi&&g.ended?defiCard(g):g.players[ME].out?`<div class="row"><button class="btn primary grow" data-act="rebuy">Recaver ${fmt(g.startStack)}</button><button class="btn grow" data-act="finish">Terminer</button></div>`
-        :`<div class="next-auto" aria-label="Main suivante dans un instant"><i style="animation-duration:${T.reveal.size?3.8:2.2}s"></i></div>`}</div>`;
+        :`<div class="next-auto" aria-label="Main suivante dans un instant"><i style="animation-duration:${T.reveal.size?5:3}s"></i></div>`}</div>`;
   }else if(T.toAct===ME){
     const potNow=pot;const presets=[['Min',mx+T.lastRaise],['½ pot',mx+(potNow+toCall)*.5],['¾ pot',mx+(potNow+toCall)*.75],['Pot',mx+(potNow+toCall)]].map(([l,v])=>[l,Math.min(g.players[ME].stack,Math.max(mx+T.lastRaise,Math.round(v/c.sb)*c.sb))]);
     const canRaise=g.players[ME].stack>mx;
@@ -778,14 +791,17 @@ function gameView(){
     const who=T.toAct>=0?`${esc(g.players[T.toAct].name)} réfléchit…`:'…';
     bottom=`<div class="waiting">${g.players[ME].out?'Tu es éliminé. ':c.folded[ME]?'Tu t’es couché. ':''}${who}</div>`;
   }
+  const feed=botFeed(g,c);
   return `<header class="bar">
     <button class="icon" data-act="menu" aria-label="Menu">☰</button>
     <div class="lvl"><span class="num">Main ${c.no} · ${fmt(c.sb)}/${fmt(c.bb)}</span><small>${(g.every??opts.every)?`montée toutes les ${g.every??opts.every} mains`:'blindes fixes'}</small></div>
     <button class="icon" data-act="goreport" data-id="${g.id}" aria-label="Bilan">≡</button></header>
-  ${g.players.length===2?huHTML(g,c,P,pot,hand):`<div class="tablewrap"><div class="table">${seats}
+  ${T.prevText&&!T.result?`<div class="prevhand"><span class="lbl">Main précédente</span> ${T.prevText}</div>`:''}
+  ${g.players.length===2&&HU_LAYOUT?huHTML(g,c,P,pot,hand):`<div class="tablewrap"><div class="table">${seats}
     <div class="center"><div class="street">${STREETS[c.st]}</div><div class="board">${c.board.map(x=>cardHTML(x)).join('')}</div><div class="pot num">Pot ${fmt(pot)}</div></div></div></div>
   <div class="me-row">${mine?cardHTML(mine[0],'big')+cardHTML(mine[1],'big'):backHTML}
     <div class="info"><div class="hand">${hand}</div><div class="pos">${P[ME]?'Position '+P[ME]+' · ':''}tapis ${fmt(g.players[ME].stack-c.bets[ME])}</div></div></div>`}
+  ${T.result?'':feed}
   ${bottom}`;
 }
 function paintUserAdvice(){
