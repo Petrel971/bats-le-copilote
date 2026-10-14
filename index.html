@@ -224,6 +224,9 @@ svg text{fill:var(--muted);font-family:var(--body);font-size:10px}
 .tablewrap.two{padding-top:46px}
 .cd.slot{background:transparent;border:1.5px dashed var(--line);box-shadow:none}
 @media (prefers-reduced-motion:reduce){.next-auto i,.botfeed .dot{animation:none}}
+.top{margin:8px 0;padding-left:22px;display:flex;flex-direction:column;gap:6px;font-size:16px}
+.top li{display:flex;gap:10px;align-items:baseline}
+.top li b{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
 </style>
 
 </head>
@@ -288,9 +291,14 @@ function oppDraw(x,y,bd){
 function buildRange(m,dead,bd,bc){
   const a=[],b=[],w=[];const useF=m.mode&&bd.length>=3;
   for(const [x,y,s] of AC){if(s>=m.pct)break;if(dead[x]||dead[y])continue;let weak=0;
-    if(useF){const T=[x,y,...bd];const cat=ev(T,T.length)>>20;weak=(cat>bc||oppDraw(x,y,bd))?0:1}
+    if(useF){const T=[x,y,...bd];const cat=ev(T,T.length)>>20;
+      // grosse agression : il faut au moins une double paire « à lui » (les tirages comptent comme des bluffs, rares)
+      weak=m.mode==='strong'?((cat>bc&&cat>=2)?0:1):((cat>bc||oppDraw(x,y,bd))?0:1)}
     a.push(x);b.push(y);w.push(weak)}
-  return {a,b,w,len:a.length,acc:m.mode==='aggr'?m.bluff:(m.callLoose??0.5)};
+  // Grosse agression : m.bluff est la PART de bluffs voulue dans sa fourchette, quel que soit le nombre de mains faibles.
+  if(m.mode==='strong'){const nw=w.reduce((t,v)=>t+v,0),ns=w.length-nw,f=m.bluff;
+    return {a,b,w,len:a.length,acc:nw&&ns?Math.min(1,f/(1-f)*ns/nw):1}}
+  return {a,b,w,len:a.length,acc:m.mode==='aggr'||m.mode==='strong'?m.bluff:(m.callLoose??0.5)};
 }
 function simulate(hc,bd,models,budget=120){
   const dead=new Uint8Array(52);hc.forEach(c=>dead[c]=1);bd.forEach(c=>dead[c]=1);
@@ -414,9 +422,15 @@ function oppModel(i){
       else if(x.a==='call'){if(nr>0){pct=Math.max(5,s.vpip*55);why='suit une relance'}else{pct=s.vpip*100;why='limpe'}}
       else if(x.a==='check'){pct=100;why='checke'}}
     if(x.a==='raise')nr++}
-  let mode=null;for(const x of c.log)if(x.p===i&&x.st>0){if(x.a==='raise')mode='aggr';else if(x.a==='call'&&mode!=='aggr')mode='call'}
-  if(mode==='aggr')why+=', puis mise après le flop';else if(mode==='call')why+=', puis suit après le flop';
-  const bl=s.obs>=6?BLUFFY[ty.k]??.25:clamp(.12+.09*s.af,.12,.5);
+  // Après le flop : une relance par-dessus une mise, plusieurs relances ou un gros tapis = presque toujours une grosse main.
+  let mode=null,nRaise=0,reraise=false,shove=false,street=-1,smax=0,potRun=0;
+  for(const x of c.log){if(x.st!==street){street=x.st;smax=0}
+    if(x.p===i&&x.st>0){if(x.a==='raise'){nRaise++;mode='aggr';if(smax>0)reraise=true;if(g.players[i].stack-(x.st===c.st?c.bets[i]:0)<=0&&x.amt>=c.pot*.8)shove=true}else if(x.a==='call'&&mode!=='aggr')mode='call'}
+    if((x.amt||0)>smax)smax=x.amt||0}
+  const strong=mode==='aggr'&&(reraise||nRaise>=2||shove);if(strong)mode='strong';
+  if(mode==='strong')why+=', puis relance fort après le flop';else if(mode==='aggr')why+=', puis mise après le flop';else if(mode==='call')why+=', puis suit après le flop';
+  let bl=s.obs>=6?BLUFFY[ty.k]??.25:clamp(.12+.09*s.af,.12,.5);
+  if(strong)bl*=ty.k==='maniac'?.8:ty.k==='lag'?.5:.3;
   return {i,pct:clamp(pct,2,100),mode,bluff:bl,callLoose:ty.k==='station'?.8:ty.k==='roc'?.3:.5,s,ty,why};
 }
 const rnd=(x,u)=>Math.max(u,Math.round(x/u)*u);
@@ -731,7 +745,7 @@ function record(shown){
   g.players.forEach((p,i)=>{if(p.stack<=0){if(i===ME||g.defi)p.out=true;else{p.stack=g.startStack;p.rebuys++}}});
   if(g.defi&&(g.players.some(p=>p.out)||g.hands.length>=DEFI.max)){g.ended=true;g.defiRes=defiResult(g)}
   T.toAct=-1;const nx=seatsFrom(g.dealer+1,i=>!g.players[i].out)[0];if(nx!=null)g.dealer=nx;
-  save();render();
+  save();render();sendGame(g);
   // Rien à décider : la main suivante démarre toute seule après un court instant.
   if(!g.ended&&!g.players[ME].out){const tk=token();setTimeout(()=>{if(token()===tk&&T.result){T.prevText=T.result.text;startHand()}},Object.keys(shown||{}).length?5000:3000)}
 }
@@ -789,6 +803,38 @@ function botFeed(g,c){
   const w={fold:'se couche',check:'checke',call:'suit',raise:(g.players[last.p].stack-c.bets[last.p]===0?'fait tapis':(last.st===0||c.log.some(x=>x.st===last.st&&x.a==='raise'&&x!==last&&c.log.indexOf(x)<c.log.indexOf(last))?'relance à':'mise'))}[last.a];
   const amt=(last.a==='raise'||last.a==='call')&&last.amt?' '+fmt(last.amt):'';
   return `<div class="botfeed ${last.a}"><span class="lbl">${STREETS[last.st]}</span><div><b>${esc(g.players[last.p].name)}</b> ${w}<span class="num">${amt}</span></div></div>`;
+}
+
+function releveText(g){const C=c=>c==null?'':RD[c%13]+'shdc'[(c/13)|0];
+    const lines=[`PARTIE ${g.name} · ${g.players.map(p=>p.name).join(', ')} · tapis ${g.startStack} · version ${APP_VERSION}${db.pseudo?' · joueur '+db.pseudo:''}`];
+    for(const h of g.hands){const N=i=>g.players[i].name;
+      lines.push(`#${h.no} ${h.sb}/${h.bb} D:${N(h.dealer)} | Toi:${(h.hero||[]).map(C).join('')} | board:${h.board.map(C).join(' ')}`+
+        ` | ${h.log.map(x=>N(x.p)+'.'+['P','F','T','R'][x.st]+':'+x.a+(x.amt?x.amt:'')).join(' ')}`+
+        ` | montrées:${Object.entries(h.shown||{}).map(([i,cs])=>N(i)+'='+cs.map(C).join('')).join(',')}`+
+        ` | gagnant:${h.winners.map(N).join('+')} pot:${h.pot} | stacks:${h.end.join('/')}`+
+        ((h.dec||[]).length?` | conseil:${h.dec.map(x=>x.adv+'>'+x.did).join(',')}`:''))}
+  return lines.join('\n');
+}
+// Envoi automatique des parties de défi (site public uniquement : SCRIPT_URL vide = rien n'est envoyé).
+const SCRIPT_URL='https://script.google.com/macros/s/AKfycbx7X0HfNc7i077vLjWBsBmd1lbkHso6JaG4a9yQFankBlIgBBrqK_Zo7MCcZD8r05bO/exec';
+const APP_VERSION='2026-10-14e';
+function sendGame(g){
+  if(!SCRIPT_URL||!g||!g.defi)return;
+  const r=g.ended?(g.defiRes||defiResult(g)):null;
+  const body={gameId:g.id,pseudo:db.pseudo||'',ended:!!g.ended,outcome:r?r.outcome:'',score:g.players[ME].stack-g.startStack,hands:g.hands.length,
+    code:r?r.code:'',version:APP_VERSION,releve:releveText(g)};
+  try{fetch(SCRIPT_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(body),keepalive:true}).catch(()=>{})}catch(e){}
+}
+let TOP=null;
+function loadTop(){if(!SCRIPT_URL||TOP)return;TOP={loading:true};
+  fetch(SCRIPT_URL).then(r=>r.json()).then(j=>{TOP=j.ok?j:{error:true};if(view==='home')render()}).catch(()=>{TOP={error:true};if(view==='home')render()})}
+function topHTML(){
+  if(!SCRIPT_URL)return '';loadTop();
+  if(!TOP||TOP.loading)return '<div class="panel muted">Chargement du classement…</div>';
+  if(TOP.error)return '<div class="panel muted">Classement indisponible pour le moment.</div>';
+  if(!TOP.top.length)return '<div class="panel muted">Pas encore de défi terminé. Sois le premier au classement !</div>';
+  return `<div class="panel"><h3>Classement</h3><ol class="top">${TOP.top.map(t=>`<li><b>${esc(t.pseudo)}</b><span class="num ${t.score>0?'pos':'neg'}">${sgn(t.score)}</span><span class="muted">${t.hands} mains</span></li>`).join('')}</ol>
+    <div class="muted" style="font-size:13px">${TOP.played} défi${TOP.played>1?'s':''} joué${TOP.played>1?'s':''} au total.</div></div>`;
 }
 
 /* ============ rendu du duel ============ */
@@ -869,9 +915,11 @@ function homeView(){
   return `<div class="hero-title"><span class="lbl">Défi poker</span><h1>Bats le Copilote</h1>
     <p>Un contre un face au bot. 8 000 jetons chacun, blindes 50/100 qui montent toutes les 10 mains, pas de recave, 60 mains au plus. Pour gagner : élimine-le, ou finis avec plus de jetons que lui.</p></div>
   <div class="stack">
+    ${SCRIPT_URL?`<div class="field"><label class="lbl" for="pseudo">Ton prénom ou pseudo, pour le classement</label><input id="pseudo" maxlength="30" autocomplete="nickname" value="${esc(db.pseudo||'')}" placeholder="Anonyme"></div>`:''}
     <button class="btn primary" data-act="defi" style="min-height:58px;font-size:20px">Relever le défi</button>
     ${cur?`<button class="btn" data-act="resume" data-id="${cur.id}">Reprendre mon défi en cours (main ${cur.hands.length+1})</button>`:''}
-    <div class="panel"><b>À la fin de la partie</b>, touche « Copier mon relevé pour Lucas » et envoie-lui le texte.</div>
+    ${SCRIPT_URL?'<div class="muted" style="font-size:13px">Tes parties sont envoyées automatiquement à Lucas : ton pseudo et les mains jouées, rien d’autre.</div>':'<div class="panel"><b>À la fin de la partie</b>, touche « Copier mon relevé pour Lucas » et envoie-lui le texte.</div>'}
+    ${topHTML()}
   </div>`;
 }
 function toggles(){return `<label class="tg"><input type="checkbox" data-opt="showAdvice" ${opts.showAdvice?'checked':''}> <span>Me montrer aussi le conseil de l’appli pendant que je joue</span></label>
@@ -896,15 +944,8 @@ const ACT={
   goreport:d=>{closeLayer();reportId=d.id;view='report';render()},
   u:d=>{const a=d.a;userAct(a,a==='raise'?(+document.getElementById('rz').value||0):0)},
   preset:d=>{T.raiseTo=+d.v;const el=document.getElementById('rz');if(el)el.value=d.v},
-  export:d=>{const g=db.games.find(x=>x.id===d.id);const C=c=>c==null?'':RD[c%13]+'shdc'[(c/13)|0];
-    const lines=[`PARTIE ${g.name} · ${g.players.map(p=>p.name).join(', ')} · tapis ${g.startStack}`];
-    for(const h of g.hands){const N=i=>g.players[i].name;
-      lines.push(`#${h.no} ${h.sb}/${h.bb} D:${N(h.dealer)} | Toi:${(h.hero||[]).map(C).join('')} | board:${h.board.map(C).join(' ')}`+
-        ` | ${h.log.map(x=>N(x.p)+'.'+['P','F','T','R'][x.st]+':'+x.a+(x.amt?x.amt:'')).join(' ')}`+
-        ` | montrées:${Object.entries(h.shown||{}).map(([i,cs])=>N(i)+'='+cs.map(C).join('')).join(',')}`+
-        ` | gagnant:${h.winners.map(N).join('+')} pot:${h.pot} | stacks:${h.end.join('/')}`+
-        ((h.dec||[]).length?` | conseil:${h.dec.map(x=>x.adv+'>'+x.did).join(',')}`:''))}
-    const txt=lines.join('\n');
+  export:d=>{const g=db.games.find(x=>x.id===d.id);
+    const txt=releveText(g);
     openSheet(`<div class="stack"><h2>Ton relevé de partie</h2><div class="muted">Copie ce texte et envoie-le à Lucas.</div>
       <textarea id="exp" rows="8" readonly>${esc(txt)}</textarea><button class="btn primary" data-act="copyexp">Copier</button><div id="cpm" class="muted"></div></div>`)},
   copyexp:()=>{const t=document.getElementById('exp');t.select();const m=document.getElementById('cpm');
@@ -914,7 +955,7 @@ const ACT={
   finish:()=>{const g=G();g.ended=true;g.cur=null;save();closeLayer();reportId=g.id;view='report';render()},
 };
 document.addEventListener('click',e=>{const t=e.target.closest('[data-act]');if(!t||t.disabled)return;const f=ACT[t.dataset.act];if(f)f(t.dataset,t)});
-document.addEventListener('change',e=>{const t=e.target,k=t.dataset.opt;if(!k)return;
+document.addEventListener('change',e=>{const t=e.target;if(t.id==='pseudo'){db.pseudo=t.value.trim().slice(0,30);save();return}const k=t.dataset.opt;if(!k)return;
   opts[k]=t.type==='checkbox'?t.checked:Math.max(0,+t.value||0);if(k==='bb'&&opts.sb>=opts.bb)opts.sb=Math.floor(opts.bb/2);db.duelOpts=opts;save();
   if(view==='game'&&(k==='showAdvice')){if(T.toAct===ME&&opts.showAdvice&&!T.userAdv)T.userAdv=adviceFor(ME);render()}});
 
