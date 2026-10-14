@@ -830,13 +830,28 @@ function releveText(g){const C=c=>c==null?'':RD[c%13]+'shdc'[(c/13)|0];
 }
 // Envoi automatique des parties de défi (site public uniquement : SCRIPT_URL vide = rien n'est envoyé).
 const SCRIPT_URL='https://script.google.com/macros/s/AKfycbx7X0HfNc7i077vLjWBsBmd1lbkHso6JaG4a9yQFankBlIgBBrqK_Zo7MCcZD8r05bO/exec';
-const APP_VERSION='2026-10-14f';
-function sendGame(g){
+const APP_VERSION='2026-10-14g';
+// Boîte d'envoi : chaque partie reste à envoyer tant que Google n'a pas confirmé l'avoir reçue.
+function sendGame(g,abandon){
   if(!SCRIPT_URL||!g||!g.defi)return;
   const r=g.ended?(g.defiRes||defiResult(g)):null;
-  const body={gameId:g.id,pseudo:db.pseudo||'',ended:!!g.ended,outcome:r?r.outcome:'',score:g.players[ME].stack-g.startStack,hands:g.hands.length,
+  const body={gameId:g.id,pseudo:db.pseudo||'',ended:!!g.ended&&!abandon,outcome:abandon?'abandon':r?r.outcome:'',score:g.players[ME].stack-g.startStack,hands:g.hands.length,
     code:r?r.code:'',version:APP_VERSION,releve:releveText(g)};
-  try{fetch(SCRIPT_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(body),keepalive:true}).catch(()=>{})}catch(e){}
+  db.outbox=db.outbox||{};db.outbox[g.id]=body;save();flushOutbox();
+}
+const SENDING=new Set();
+function flushOutbox(){
+  if(!SCRIPT_URL||!db.outbox)return;
+  for(const id of Object.keys(db.outbox)){
+    if(SENDING.has(id))continue;SENDING.add(id);const body=db.outbox[id];
+    fetch(SCRIPT_URL,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(body),keepalive:true})
+      .then(r=>r.json()).then(j=>{if(j&&j.ok&&db.outbox&&db.outbox[id]===body){delete db.outbox[id];save()}})
+      .catch(()=>{}).finally(()=>{SENDING.delete(id);if(db.outbox&&db.outbox[id]&&db.outbox[id]!==body)flushOutbox()});
+  }
+}
+// Relancer un défi alors qu'un autre est en cours : l'ancien est enregistré comme abandon.
+function closeOpenDefis(exceptId){
+  for(const g of db.games)if(g.defi&&!g.ended&&g.id!==exceptId){g.ended=true;g.abandoned=true;g.cur=null;g.defiRes={...defiResult(g),outcome:'abandon'};if(g.hands.length)sendGame(g,true)}
 }
 let TOP=null;
 function loadTop(){if(!SCRIPT_URL||TOP)return;TOP={loading:true};
@@ -950,7 +965,7 @@ const ACT={
   menu:()=>menuSheet(),
   bots:d=>{opts.bots=clamp(opts.bots+(+d.d),1,5);db.duelOpts=opts;save();render()},
   newgame:()=>newGame(),
-  defi:()=>newGame(true),
+  defi:()=>{closeOpenDefis();newGame(true)},
   defishare:()=>{const t=document.getElementById('defitxt');t.select();const m=document.getElementById('defim');
     try{navigator.clipboard.writeText(t.value).then(()=>m.textContent='Copié ! Colle-le dans ta conversation avec tes amis.',()=>m.textContent='Texte sélectionné : fais Copier.')}catch(e){m.textContent='Texte sélectionné : fais Copier.'}},
   resume:d=>{db.cur=d.id;view='game';const g=G();if(g.cur&&!T.result){g.players.forEach((p,i)=>p.stack=g.cur.start[i])}startHand()},
@@ -974,7 +989,7 @@ document.addEventListener('change',e=>{const t=e.target;if(t.id==='pseudo'){db.p
 
 // Une main interrompue (page rechargée) est annulée : les cartes ne sont jamais enregistrées.
 (function(){const g=G();if(g&&g.cur&&!g.ended){g.players.forEach((p,i)=>p.stack=g.cur.start[i]);g.cur=null;save()}})();
-view='home';render();
+view='home';render();flushOutbox();window.addEventListener('online',flushOutbox);setInterval(flushOutbox,60000);
 </script>
 
 <script>if('serviceWorker' in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));</script>
