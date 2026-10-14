@@ -780,7 +780,7 @@ function gameView(){
   }
   return `<header class="bar">
     <button class="icon" data-act="menu" aria-label="Menu">☰</button>
-    <div class="lvl"><span class="num">Main ${c.no} · ${fmt(c.sb)}/${fmt(c.bb)}</span><small>${opts.every?`montée toutes les ${opts.every} mains`:'blindes fixes'}</small></div>
+    <div class="lvl"><span class="num">Main ${c.no} · ${fmt(c.sb)}/${fmt(c.bb)}</span><small>${(g.every??opts.every)?`montée toutes les ${g.every??opts.every} mains`:'blindes fixes'}</small></div>
     <button class="icon" data-act="goreport" data-id="${g.id}" aria-label="Bilan">≡</button></header>
   ${g.players.length===2?huHTML(g,c,P,pot,hand):`<div class="tablewrap"><div class="table">${seats}
     <div class="center"><div class="street">${STREETS[c.st]}</div><div class="board">${c.board.map(x=>cardHTML(x)).join('')}</div><div class="pot num">Pot ${fmt(pot)}</div></div></div></div>
