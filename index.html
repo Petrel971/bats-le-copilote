@@ -364,7 +364,7 @@ function allStats(){if(!statsCache){statsCache={};statsSeen={}}
   return statsCache}
 function addHand(S,g,h){
     const names=g.players.map(pkey);
-    const get=s=>S[names[s]]||(S[names[s]]={obs:0,vpip:0,pfr:0,ag:0,ca:0,tbO:0,tb:0,fbO:0,fb:0,cbO:0,cb:0,sf:0,sd:0});
+    const get=s=>S[names[s]]||(S[names[s]]={obs:0,vpip:0,pfr:0,ag:0,ca:0,tbO:0,tb:0,fbO:0,fb:0,cbO:0,cb:0,sf:0,sd:0,jam:0,jO:0});
     {if(h.skipped)return;
       const seen=new Set(h.log.filter(x=>x.a!=='blind').map(x=>x.p));
       for(const s of seen)get(s).obs++;
@@ -382,17 +382,24 @@ function addHand(S,g,h){
       const full=(h.board||[]).filter(c=>c!=null).length===5;
       for(const s of seen){const o=get(s);const pre=h.log.filter(x=>x.p===s&&x.st===0&&x.a!=='blind');
         if(pre.some(x=>x.a==='call'||x.a==='raise'))o.vpip++;if(pre.some(x=>x.a==='raise'))o.pfr++;
+        // tapis avant le flop (au moins 15 grosses blindes, quasiment tout son tapis)
+        const jammed=pre.some(x=>x.a==='raise'&&h.start&&x.amt>=.9*h.start[s]&&x.amt>=15*(h.bb||1));
+        if(pre.length){o.jO++;if(jammed)o.jam++}
+        // Mémoire de l'abattage : force des mains montrées, selon ce qu'il avait fait avant le flop.
+        const cs=h.shown&&h.shown[s];
+        if(cs&&pre.length){const ctx=jammed?'jam':pre.some(x=>x.a==='raise')?'raise':pre.some(x=>x.a==='call')?'call':null;
+          if(ctx){o.sh=o.sh||{jam:[],raise:[],call:[]};o.sh[ctx].push(Math.round(CL_E[ck(cs[0],cs[1])]))}}
         if(h.log.some(x=>x.p===s&&x.st>=1)){o.sf++;if(full&&!h.log.some(x=>x.p===s&&x.a==='fold'))o.sd++}}
     }}
 function statsFor(name,onlyGame){
   const S=onlyGame?rawStats(onlyGame):allStats();
-  const o=S[name.trim().toLowerCase()]||{obs:0,vpip:0,pfr:0,ag:0,ca:0,tbO:0,tb:0,fbO:0,fb:0,cbO:0,cb:0,sf:0,sd:0};
+  const o=S[name.trim().toLowerCase()]||{obs:0,vpip:0,pfr:0,ag:0,ca:0,tbO:0,tb:0,fbO:0,fb:0,cbO:0,cb:0,sf:0,sd:0,jam:0,jO:0};
   // a priori selon le nombre de joueurs, vite remplacé par ce qu'on observe
   const k=(typeof G==='function'&&G()&&G().cur)?G().cur.dealt.filter(Boolean).length:6;
   const pv=k<=2?.6:k<=4?.4:.3,pp=k<=2?.4:k<=4?.22:.14;
   const r=(a,n,p,w)=>(a+p*w)/(n+w);
   return {obs:o.obs,vpip:r(o.vpip,o.obs,pv,4),pfr:r(o.pfr,o.obs,pp,4),af:(o.ag+1.5*2)/(o.ca+2),
-    tb:r(o.tb,o.tbO,k<=2?.14:.07,4),fb:r(o.fb,o.fbO,.45,4),cb:r(o.cb,o.cbO,.6,3),wtsd:r(o.sd,o.sf,.3,4),raw:o};
+    tb:r(o.tb,o.tbO,k<=2?.14:.07,4),fb:r(o.fb,o.fbO,.45,4),cb:r(o.cb,o.cbO,.6,3),wtsd:r(o.sd,o.sf,.3,4),jam:r(o.jam||0,o.jO||0,.05,2),raw:o};
 }
 // Type de joueur et façon de l'exploiter.
 function typeOf(s){
@@ -416,13 +423,19 @@ const TUNE={vbHU:.54,vbMulti:.6,raiseFacing:.65,raiseMargin:.3,callMargin:0,bluf
 const BLUFFY={maniac:.55,lag:.4,loose:.25,reg:.25,tag:.22,fitfold:.15,station:.1,roc:.06,inconnu:.25};
 function oppModel(i){
   const g=G(),c=g.cur,s=statsFor(pkey(g.players[i])),ty=typeOf(s);
-  const pre=c.log.filter(x=>x.st===0&&x.a!=='blind');let nr=0,pct=100,why='n’a pas encore parlé';
+  const pre=c.log.filter(x=>x.st===0&&x.a!=='blind');let nr=0,pct=100,why='n’a pas encore parlé',ctx=null;
   for(const x of pre){if(x.p===i){
-      if(x.a==='raise'){if(nr===0){pct=s.pfr*100;why='relance'}else if(nr===1){pct=Math.max(2.5,s.tb*100);why='sur-relance'}else{pct=Math.max(2,s.tb*45);why='4-bet'}}
-      else if(x.a==='call'){if(nr>0){pct=Math.max(5,s.vpip*55);why='suit une relance'}else{pct=s.vpip*100;why='limpe'}}
+      if(x.a==='raise'){ctx='raise';if(nr===0){pct=s.pfr*100;why='relance'}else if(nr===1){pct=Math.max(2.5,s.tb*100);why='sur-relance'}else{pct=Math.max(2,s.tb*45);why='4-bet'}
+        // Tapis avant le flop : sa fourchette dépend de la fréquence à laquelle il fait tapis.
+        if(c.start&&x.amt>=.9*c.start[i]&&x.amt>=15*c.bb){ctx='jam';pct=Math.max(pct,s.jam*100);why='fait tapis'+(s.raw.jO>=3?` (${Math.round(s.jam*100)} % de ses mains)`:'')}}
+      else if(x.a==='call'){ctx='call';if(nr>0){pct=Math.max(5,s.vpip*55);why='suit une relance'}else{pct=s.vpip*100;why='limpe'}}
       else if(x.a==='check'){pct=100;why='checke'}}
     if(x.a==='raise')nr++}
   // Après le flop : une relance par-dessus une mise, plusieurs relances ou un gros tapis = presque toujours une grosse main.
+  // Mains déjà montrées dans la même situation : sa fourchette est au moins aussi large.
+  const shown=ctx&&s.raw.sh?s.raw.sh[ctx]:null;
+  if(shown&&shown.length>=2){const q=[...shown].sort((a,b)=>a-b)[Math.floor(.75*(shown.length-1))];
+    if(q>pct){pct=Math.min(100,q*1.05);why+=`, et a déjà montré des mains jusqu’au top ${Math.round(q)} %`}}
   let mode=null,nRaise=0,reraise=false,shove=false,street=-1,smax=0,potRun=0;
   for(const x of c.log){if(x.st!==street){street=x.st;smax=0}
     if(x.p===i&&x.st>0){if(x.a==='raise'){nRaise++;mode='aggr';if(smax>0)reraise=true;if(g.players[i].stack-(x.st===c.st?c.bets[i]:0)<=0&&x.amt>=c.pot*.8)shove=true}else if(x.a==='call'&&mode!=='aggr')mode='call'}
@@ -817,7 +830,7 @@ function releveText(g){const C=c=>c==null?'':RD[c%13]+'shdc'[(c/13)|0];
 }
 // Envoi automatique des parties de défi (site public uniquement : SCRIPT_URL vide = rien n'est envoyé).
 const SCRIPT_URL='https://script.google.com/macros/s/AKfycbx7X0HfNc7i077vLjWBsBmd1lbkHso6JaG4a9yQFankBlIgBBrqK_Zo7MCcZD8r05bO/exec';
-const APP_VERSION='2026-10-14e';
+const APP_VERSION='2026-10-14f';
 function sendGame(g){
   if(!SCRIPT_URL||!g||!g.defi)return;
   const r=g.ended?(g.defiRes||defiResult(g)):null;
