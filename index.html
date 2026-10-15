@@ -396,10 +396,12 @@ function statsFor(name,onlyGame){
   const o=S[name.trim().toLowerCase()]||{obs:0,vpip:0,pfr:0,ag:0,ca:0,tbO:0,tb:0,fbO:0,fb:0,cbO:0,cb:0,sf:0,sd:0,jam:0,jO:0};
   // a priori selon le nombre de joueurs, vite remplacé par ce qu'on observe
   const k=(typeof G==='function'&&G()&&G().cur)?G().cur.dealt.filter(Boolean).length:6;
-  const pv=k<=2?.6:k<=4?.4:.3,pp=k<=2?.4:k<=4?.22:.14;
+  // A priori du tête-à-tête calibrés sur les parties du défi (14 oct. 2026, ~300 mains d'humains) :
+  // public très agressif (beaucoup de tapis et de sur-relances, se couche rarement face à une mise).
+  const HU=k<=2,pv=HU?.7:k<=4?.4:.3,pp=HU?.4:k<=4?.22:.14;
   const r=(a,n,p,w)=>(a+p*w)/(n+w);
-  return {obs:o.obs,vpip:r(o.vpip,o.obs,pv,4),pfr:r(o.pfr,o.obs,pp,4),af:(o.ag+1.5*2)/(o.ca+2),
-    tb:r(o.tb,o.tbO,k<=2?.14:.07,4),fb:r(o.fb,o.fbO,.45,4),cb:r(o.cb,o.cbO,.6,3),wtsd:r(o.sd,o.sf,.3,4),jam:r(o.jam||0,o.jO||0,.05,2),raw:o};
+  return {obs:o.obs,vpip:r(o.vpip,o.obs,pv,4),pfr:r(o.pfr,o.obs,pp,4),af:(o.ag+(HU?2.3:1.5)*2)/(o.ca+2),
+    tb:r(o.tb,o.tbO,HU?.28:.07,4),fb:r(o.fb,o.fbO,HU?.28:.45,4),cb:r(o.cb,o.cbO,.6,3),wtsd:r(o.sd,o.sf,.3,4),jam:r(o.jam||0,o.jO||0,HU?.22:.05,2),raw:o};
 }
 // Type de joueur et façon de l'exploiter.
 function typeOf(s){
@@ -436,15 +438,15 @@ function oppModel(i){
   const shown=ctx&&s.raw.sh?s.raw.sh[ctx]:null;
   if(shown&&shown.length>=2){const q=[...shown].sort((a,b)=>a-b)[Math.floor(.75*(shown.length-1))];
     if(q>pct){pct=Math.min(100,q*1.05);why+=`, et a déjà montré des mains jusqu’au top ${Math.round(q)} %`}}
-  let mode=null,nRaise=0,reraise=false,shove=false,street=-1,smax=0,potRun=0;
+  let mode=null,nRaise=0,nCall=0,reraise=false,shove=false,street=-1,smax=0,potRun=0;
   for(const x of c.log){if(x.st!==street){street=x.st;smax=0}
-    if(x.p===i&&x.st>0){if(x.a==='raise'){nRaise++;mode='aggr';if(smax>0)reraise=true;if(g.players[i].stack-(x.st===c.st?c.bets[i]:0)<=0&&x.amt>=c.pot*.8)shove=true}else if(x.a==='call'&&mode!=='aggr')mode='call'}
+    if(x.p===i&&x.st>0){if(x.a==='raise'){nRaise++;mode='aggr';if(smax>0)reraise=true;if(g.players[i].stack-(x.st===c.st?c.bets[i]:0)<=0&&x.amt>=c.pot*.8)shove=true}else if(x.a==='call'){nCall++;if(mode!=='aggr')mode='call'}}
     if((x.amt||0)>smax)smax=x.amt||0}
   const strong=mode==='aggr'&&(reraise||nRaise>=2||shove);if(strong)mode='strong';
   if(mode==='strong')why+=', puis relance fort après le flop';else if(mode==='aggr')why+=', puis mise après le flop';else if(mode==='call')why+=', puis suit après le flop';
   let bl=s.obs>=6?BLUFFY[ty.k]??.25:clamp(.12+.09*s.af,.12,.5);
   if(strong)bl*=ty.k==='maniac'?.8:ty.k==='lag'?.5:.3;
-  return {i,pct:clamp(pct,2,100),mode,bluff:bl,callLoose:ty.k==='station'?.8:ty.k==='roc'?.3:.5,s,ty,why};
+  return {i,pct:clamp(pct,2,100),mode,bluff:bl,callLoose:nCall>=2?(ty.k==='station'?.45:.15):ty.k==='station'?.8:ty.k==='roc'?.3:.5,s,ty,why};
 }
 const rnd=(x,u)=>Math.max(u,Math.round(x/u)*u);
 // Tirage stable pendant un tour d'enchères : le conseil ne change pas à chaque rafraîchissement.
@@ -542,7 +544,9 @@ function advise(){
       if(bettor.includes('roc'))L.push('Ce joueur ne mise presque jamais sans jeu : respecte sa mise.');
     }else{
       const vb=opps.length===1?TUNE.vbHU:TUNE.vbMulti;
-      if(eq>=vb||(stations.length&&eq>=.52)){const f=stations.length?.75:eq>=.8?.75:.6;A=spr<1.5?shove:R(pot*f);if(stations.length)L.push('Face à quelqu’un qui suit tout, mise gros tes bonnes mains.')}
+      if(eq>=vb||(stations.length&&eq>=.52)){const f=stations.length?.75:eq>=.8?.75:.6;
+        if(bd.length===5&&eq<.8){A={act:'raise',label:'Miser',amount:rnd(Math.min(pot*f,behind*.5),u)};L.push('Mise de valeur raisonnable : avec une main correcte mais pas énorme, on ne met pas tout son tapis.')}
+        else A=spr<1.5?shove:R(pot*f);if(stations.length)L.push('Face à quelqu’un qui suit tout, mise gros tes bonnes mains.')}
       else if(eq>=.5&&opps.length===1){A=R(pot*.33);L.push('Petite mise de protection : fais payer les tirages.')}
       else{
         // Bluff : on compare ce que rapporte une mise (il se couche, ou il suit et on peut encore gagner) à un simple check.
@@ -830,7 +834,7 @@ function releveText(g){const C=c=>c==null?'':RD[c%13]+'shdc'[(c/13)|0];
 }
 // Envoi automatique des parties de défi (site public uniquement : SCRIPT_URL vide = rien n'est envoyé).
 const SCRIPT_URL='https://script.google.com/macros/s/AKfycbx7X0HfNc7i077vLjWBsBmd1lbkHso6JaG4a9yQFankBlIgBBrqK_Zo7MCcZD8r05bO/exec';
-const APP_VERSION='2026-10-14g';
+const APP_VERSION='2026-10-15a';
 // Boîte d'envoi : chaque partie reste à envoyer tant que Google n'a pas confirmé l'avoir reçue.
 function sendGame(g,abandon){
   if(!SCRIPT_URL||!g||!g.defi)return;
