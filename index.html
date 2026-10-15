@@ -834,7 +834,7 @@ function releveText(g){const C=c=>c==null?'':RD[c%13]+'shdc'[(c/13)|0];
 }
 // Envoi automatique des parties de défi (site public uniquement : SCRIPT_URL vide = rien n'est envoyé).
 const SCRIPT_URL='https://script.google.com/macros/s/AKfycbx7X0HfNc7i077vLjWBsBmd1lbkHso6JaG4a9yQFankBlIgBBrqK_Zo7MCcZD8r05bO/exec';
-const APP_VERSION='2026-10-15a';
+const APP_VERSION='2026-10-15b';
 // Boîte d'envoi : chaque partie reste à envoyer tant que Google n'a pas confirmé l'avoir reçue.
 function sendGame(g,abandon){
   if(!SCRIPT_URL||!g||!g.defi)return;
@@ -843,14 +843,14 @@ function sendGame(g,abandon){
     code:r?r.code:'',version:APP_VERSION,releve:releveText(g)};
   db.outbox=db.outbox||{};db.outbox[g.id]=body;save();flushOutbox();
 }
-const SENDING=new Set();
+const SENDING=new Set(),RETRY=new Set(); // RETRY : relance demandée pendant un envoi en cours
 function flushOutbox(){
   if(!SCRIPT_URL||!db.outbox)return;
   for(const id of Object.keys(db.outbox)){
-    if(SENDING.has(id))continue;SENDING.add(id);const body=db.outbox[id];
+    if(SENDING.has(id)){RETRY.add(id);continue}SENDING.add(id);const body=db.outbox[id];
     fetch(SCRIPT_URL,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(body),keepalive:true})
       .then(r=>r.json()).then(j=>{if(j&&j.ok&&db.outbox&&db.outbox[id]===body){delete db.outbox[id];save()}})
-      .catch(()=>{}).finally(()=>{SENDING.delete(id);if(db.outbox&&db.outbox[id]&&db.outbox[id]!==body)flushOutbox()});
+      .catch(()=>{}).finally(()=>{SENDING.delete(id);const again=RETRY.delete(id);if(db.outbox&&db.outbox[id]&&(again||db.outbox[id]!==body))flushOutbox()});
   }
 }
 // Relancer un défi alors qu'un autre est en cours : l'ancien est enregistré comme abandon.
